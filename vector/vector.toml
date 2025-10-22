@@ -1,0 +1,79 @@
+# =========================
+# VECTOR CONFIG - ALL-IN-ONE
+# =========================
+data_dir = "/var/lib/vector"
+
+# -------- SOURCES --------
+
+# 1️⃣ Windows Event Logs (chạy trên host Windows)
+[sources.windows_logs]
+type = "windows_event_log"
+channels = ["Application", "System"]
+
+# 2️⃣ Docker container logs
+[sources.docker_logs]
+type = "docker_logs"
+include_containers = ["*"]
+auto_partial_merge = true
+
+# 3️⃣ System metrics
+[sources.host_metrics]
+type = "host_metrics"
+scrape_interval_secs = 10
+collectors = ["cpu", "memory", "disk", "filesystem", "network"]
+
+# -------- TRANSFORMS --------
+
+# Chuẩn hoá Docker logs
+[transforms.parse_docker]
+type = "remap"
+inputs = ["docker_logs"]
+source = '''
+. = parse_json!(.message) ?? { "message": .message }
+timestamp = now()
+container = .container_name ?? "unknown"
+level = downcase!(.level) ?? "info"
+source_type = "docker"
+'''
+
+# Chuẩn hoá Windows logs
+[transforms.parse_windows]
+type = "remap"
+inputs = ["windows_logs"]
+source = '''
+timestamp = now()
+source_type = "windows"
+event_id = to_string!(.event_id)
+level = downcase!(.level) ?? "info"
+message = .message ?? ""
+'''
+
+# Chuẩn hoá metrics
+[transforms.parse_metrics]
+type = "remap"
+inputs = ["host_metrics"]
+source = '''
+timestamp = now()
+source_type = "metric"
+hostname = get_env_var!("HOSTNAME")
+'''
+
+# -------- SINKS (Kafka) --------
+
+# Gửi logs (docker + windows)
+[sinks.kafka_logs]
+type = "kafka"
+inputs = ["parse_docker", "parse_windows"]
+bootstrap_servers = "kafka:9092"
+topic = "logs_raw"
+encoding.codec = "json"
+healthcheck = true
+
+# Gửi metrics
+[sinks.kafka_metrics]
+type = "kafka"
+inputs = ["parse_metrics"]
+bootstrap_servers = "kafka:9092"
+topic = "metrics_raw"
+encoding.codec = "json"
+healthcheck = true
